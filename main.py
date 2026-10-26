@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 from geo import get_lat_lon
@@ -9,7 +9,26 @@ from weather import get_weather_full
 class Appointment(BaseModel):
     date: str = Field(..., title="Date of the appointment", max_length=100)
     time: str = Field(..., title="Time of the appointment", max_length=100)
-    location: str = Field(..., title="Location of the appointment", max_length=100)
+    appointment_location: str = Field(
+        ..., title="Location of the appointment", max_length=100
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_custom_data(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        # GHL sends custom fields in customData, while root fields remain supported.
+        custom_data = values.get("customData") or values.get("custom_data") or {}
+        if not isinstance(custom_data, dict):
+            custom_data = {}
+
+        normalized = dict(custom_data)
+        for field in ("date", "time", "appointment_location"):
+            if field in values:
+                normalized[field] = values[field]
+        return normalized
 
 
 
@@ -43,7 +62,7 @@ def appointment_verdict(weather):
 
 @app.post("/appointments")
 def check_weather(appointment: Appointment):
-    loc = get_lat_lon(appointment.location)
+    loc = get_lat_lon(appointment.appointment_location)
 
     lat = loc.get("latitude")
     lon = loc.get("longitude")
@@ -53,10 +72,12 @@ def check_weather(appointment: Appointment):
         return {"error": loc.get("error", "Location could not be geocoded.")}
 
     weather = get_weather_full(lat, lon)
-    main_weather = weather.get("weather", [])[0].get("main")
     # Pass API failures back to the caller instead of making a decision from missing data.
     if "error" in weather:
         return weather
+
+    conditions = weather.get("weather", [])
+    main_weather = conditions[0].get("main") if conditions else None
 
     return {
         "date": appointment.date,
